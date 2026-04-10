@@ -222,7 +222,7 @@ Containers without a `HEALTHCHECK` directive bypass the check entirely and are t
 
 ## HTTP API
 
-Enable with `OPENWATCH_HTTP_API=true`. The API listens on port `8080` and exposes the following endpoints:
+Enable with `OPENWATCH_HTTP_API=true`. The API listens on port `8080` inside the container — the port is fixed, so if you need it on a different host port just remap it with `-p 9000:8080` (or the docker-compose equivalent). The following endpoints are exposed:
 
 | Method | Path | Description |
 |---|---|---|
@@ -299,7 +299,7 @@ OpenWatch is designed as a drop-in replacement. The environment variables and la
 | `WATCHTOWER_LABEL_ENABLE` | `OPENWATCH_LABEL_ENABLE` | Same. |
 | `WATCHTOWER_NOTIFICATION_URL` | `OPENWATCH_NOTIFY_URL` | Same shoutrrr URL format. |
 | `WATCHTOWER_DEBUG` | `OPENWATCH_LOG_LEVEL=debug` | OpenWatch uses a leveled logger. |
-| `WATCHTOWER_MONITOR_ONLY` | `openwatch.notify_only=true` label | Per-container in OpenWatch rather than global. |
+| `WATCHTOWER_MONITOR_ONLY` | `openwatch.notify_only=true` | Container label in OpenWatch rather than a global env var. |
 | `WATCHTOWER_HTTP_API_METRICS` | `OPENWATCH_HTTP_API=true` | Enables both metrics and the REST API. |
 | `WATCHTOWER_TIMEOUT` | `OPENWATCH_STOP_TIMEOUT` | Graceful shutdown timeout. |
 | `DOCKER_HOST` | `DOCKER_HOST` | Unchanged — standard Docker env var. |
@@ -321,7 +321,7 @@ The Docker socket mount is identical. There is no database, state file, or other
 ### Native binary
 
 ```bash
-git clone https://github.com/openwatch/openwatch.git
+git clone https://github.com/OpenGPU-Network/openwatch.git
 cd openwatch
 make build
 ```
@@ -344,7 +344,7 @@ docker buildx build \
   .
 ```
 
-`make docker-build` wraps the same command; `make publish` adds `--push` and requires `REGISTRY_USER` and `GITHUB_TOKEN` to be set.
+`make docker-build` wraps the same command; `make publish` adds `--push` and uses whichever Docker Hub login is already active on the host (Docker Desktop, or a prior `docker login`).
 
 ### Running tests
 
