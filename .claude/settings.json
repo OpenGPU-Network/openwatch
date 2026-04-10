@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/kutay-gpu/.asdf/installs/golang/1.24.3/packages/pkg/mod/github.com/containrrr/shoutrrr@v0.8.0/**)",
+      "Bash(grep -rn \"initService\\\\|ExtractServiceName\" /Users/kutay-gpu/.asdf/installs/golang/1.24.3/packages/pkg/mod/github.com/containrrr/shoutrrr@v0.8.0/pkg/router/*.go)",
+      "Bash(awk 'NR==76 {print}' internal/notify/shoutrrr.go)",
+      "Bash(grep -n 'w\\\\.notify\\\\.Notify' internal/updater/*.go)",
+      "Bash(go run:*)",
+      "Bash(go test:*)",
+      "Bash(make help:*)",
+      "Bash(make publish:*)",
+      "Bash(echo \"exit=$?\")"
+    ]
+  }
+}

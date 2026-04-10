@@ -1,0 +1,104 @@
+# OpenWatch configuration example.
+#
+# Mount this file into the daemon at /etc/openwatch/openwatch.yaml, or
+# place it alongside the openwatch binary as ./openwatch.yaml. Every
+# field here is optional — OpenWatch ships with sane defaults and
+# accepts the same settings through OPENWATCH_* environment variables.
+#
+# Precedence (highest wins):
+#   1. OPENWATCH_* environment variables
+#   2. This YAML file
+#   3. Built-in defaults
+#
+# Uncomment the fields you actually want to change.
+
+# ---------------------------------------------------------------------------
+# Scheduling
+# ---------------------------------------------------------------------------
+
+# Poll interval in seconds between update checks. Ignored when `schedule` is set. Default: 86400 (once per day).
+#interval: 3600
+
+# Standard 5-field cron expression in local time ("minute hour dom month dow"). When set, takes priority over `interval`. An invalid expression causes startup to fail with a clear error. Default: unset.
+#schedule: "0 4 * * *"
+
+# ---------------------------------------------------------------------------
+# Update behaviour
+# ---------------------------------------------------------------------------
+
+# Delete the previous image after a successful update. Off by default so rollbacks stay fast and disk usage changes are never a surprise. Default: false.
+#cleanup: false
+
+# Also consider containers that are currently stopped. Most operators only want to update running services. Default: false.
+#include_stopped: false
+
+# Opt-in mode. When true, OpenWatch only touches containers that carry the label `openwatch.enable=true`. When false (default), every container is considered unless explicitly opted out with `openwatch.enable=false`. Default: false.
+#label_enable: false
+
+# ---------------------------------------------------------------------------
+# Safety / rollback
+# ---------------------------------------------------------------------------
+
+# Automatically roll back to the previous image if a recreated container reports unhealthy, exits before becoming healthy, or times out during the post-update healthcheck. Containers without a HEALTHCHECK directive are treated as healthy the moment they start. Default: false.
+#rollback_on_failure: false
+
+# Maximum seconds to wait for a container to report healthy after recreate. Applies only to containers with a HEALTHCHECK defined. Default: 30.
+#healthcheck_timeout: 30
+
+# Seconds to wait for a graceful SIGTERM shutdown before the daemon escalates to SIGKILL during update or rollback. Overridable per container with the `openwatch.stop_timeout` label. Default: 10.
+#stop_timeout: 10
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+# Single shoutrrr-compatible notification URL. Empty disables notifications and logs a single debug line at startup. Default: unset (notifications disabled).
+#notify_url: ""
+
+# Example notification URLs — uncomment ONE by assigning it to `notify_url` above:
+#
+#   Telegram:  telegram://<bot-token>@telegram?channels=<chat-id>
+#   Slack:     slack://<token-a>/<token-b>/<token-c>@<channel-name>
+#   ntfy:      ntfy://ntfy.sh/<topic>
+#
+# See https://containrrr.dev/shoutrrr/ for the full list of supported providers
+# (Discord, Gotify, Matrix, Mattermost, Teams, Pushover, Rocket.Chat, ...).
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+# Log level. One of: debug, info, warn, error. Default: info.
+#log_level: info
+
+# Log format. "text" prints human-readable console output; "json" prints one structured event per line, suitable for log shippers. Default: text.
+#log_format: text
+
+# ---------------------------------------------------------------------------
+# HTTP API
+# ---------------------------------------------------------------------------
+
+# Enable the HTTP API on port 8080. Exposes /health, /metrics, GET /api/v1/containers, POST /api/v1/update, POST /api/v1/update/:name. Default: false.
+#http_api: false
+
+# ---------------------------------------------------------------------------
+# Registry authentication
+# ---------------------------------------------------------------------------
+
+# Path to a Docker config.json used for private registry auth. Accepts either the directory containing config.json or the file itself, matching the DOCKER_CONFIG env var used by the Docker CLI. Leave empty to fall back to ~/.docker/config.json. Default: unset.
+#docker_config: ""
+
+# ---------------------------------------------------------------------------
+# Per-container overrides
+# ---------------------------------------------------------------------------
+#
+# The fields below are NOT set in this file — they are Docker container
+# labels set on the containers you want OpenWatch to manage. They override
+# the global values above on a per-container basis.
+#
+#   openwatch.enable        true|false   force include or exclude this container
+#   openwatch.rollback      true|false   override rollback_on_failure
+#   openwatch.cleanup       true|false   override cleanup
+#   openwatch.notify_only   true         detect + notify, never pull or recreate
+#   openwatch.stop_timeout  integer      override stop_timeout (seconds)
+#   openwatch.depends_on    name         update only after the named container

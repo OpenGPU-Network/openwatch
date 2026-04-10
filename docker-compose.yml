@@ -1,0 +1,15 @@
+services:
+  openwatch:
+    image: opengpunetwork/openwatch:latest
+    container_name: openwatch
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Optional: mount Docker config for private registry auth
+      # - ~/.docker/config.json:/root/.docker/config.json:ro
+    environment:
+      OPENWATCH_INTERVAL: "3600"
+      OPENWATCH_CLEANUP: "true"
+      OPENWATCH_LABEL_ENABLE: "false"
+      OPENWATCH_LOG_LEVEL: "info"
+      OPENWATCH_LOG_FORMAT: "text"
