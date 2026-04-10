@@ -2,7 +2,7 @@
 
 A lightweight Docker container auto-update daemon written in Go — a modern, API-negotiating replacement for Watchtower.
 
-[![Go Version](https://img.shields.io/github/go-mod/go-version/openwatch/openwatch)](go.mod)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/OpenGPU-Network/openwatch)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Docker Hub](https://img.shields.io/docker/pulls/opengpunetwork/openwatch)](https://hub.docker.com/r/opengpunetwork/openwatch)
 
