@@ -53,54 +53,83 @@ type manifest struct {
 	} `json:"config"`
 }
 
-// FetchRemoteDigest contacts the registry HTTP API v2 and returns the image
-// *config* digest for the current platform — the SHA256 Docker reports as the
-// local image .Id. The flow is:
+// FetchRemoteIdentifiers contacts the registry HTTP API v2 and returns every
+// sha256 identifier that might legitimately describe the remote image from
+// some Docker client's perspective. The watcher's comparator treats the image
+// as up-to-date if any local identifier intersects any remote identifier; see
+// docker.LocalImageIdentifiers for why the identity of "the" image digest has
+// become version-dependent.
 //
-//  1. GET /v2/{repo}/manifests/{tag}  (Accept: both manifest + index media types)
-//  2. If the response is a manifest list / OCI index, pick the entry for
-//     linux/<runtime.GOARCH> (falling back to linux/amd64).
-//  3. GET that per-platform manifest.
-//  4. Parse its body and return .config.digest.
+// The flow is:
 //
-// This is compared against docker.LocalImageDigest (which returns img.ID, the
-// config digest) — the one identifier that's stable across Docker versions,
-// single-arch and multi-arch images.
-func FetchRemoteDigest(ref *Reference, auth *registry.AuthConfig) (string, error) {
+//  1. GET /v2/{repo}/manifests/{tag} with an Accept header that covers both
+//     manifest and index media types.
+//  2. Record the top-level Docker-Content-Digest header. For single-manifest
+//     repos this is the manifest digest; for multi-arch repos it is the index
+//     digest. In both cases this is what modern containerd-based image stores
+//     report as the local .Id and inside .RepoDigests.
+//  3. If the response is a manifest list / OCI index, pick the leaf manifest
+//     for linux/<runtime.GOARCH> (falling back to linux/amd64), GET it, and
+//     also record its digest — that is what pre-containerd Docker Engines
+//     store in .RepoDigests after resolving a multi-arch pull.
+//  4. Record the leaf manifest's .config.digest as well. That is what
+//     traditional Docker Engines expose as the image config blob SHA via .Id.
+//
+// Deduped return order is: top manifest digest, leaf manifest digest, leaf
+// config digest. Any empty value is skipped.
+func FetchRemoteIdentifiers(ref *Reference, auth *registry.AuthConfig) ([]string, error) {
 	reference := ref.Tag
 	if reference == "" && ref.Digest != "" {
 		reference = ref.Digest
 	}
 	if reference == "" {
-		return "", fmt.Errorf("no tag or digest to look up")
+		return nil, fmt.Errorf("no tag or digest to look up")
 	}
 
-	_, body, contentType, err := getManifest(ref, reference, auth)
+	seen := make(map[string]struct{}, 3)
+	var ids []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	topDigest, body, contentType, err := getManifest(ref, reference, auth)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	add(topDigest)
 
-	// Manifest list / OCI index → resolve to the per-platform manifest before
-	// reading the config digest. The PRD calls this out specifically.
 	if isManifestList(contentType) {
 		platformDigest, err := pickPlatformManifest(body)
 		if err != nil {
-			return "", fmt.Errorf("pick platform manifest: %w", err)
+			return nil, fmt.Errorf("pick platform manifest: %w", err)
 		}
-		_, body, _, err = getManifest(ref, platformDigest, auth)
+		add(platformDigest)
+		leafDigestHeader, leafBody, _, err := getManifest(ref, platformDigest, auth)
 		if err != nil {
-			return "", fmt.Errorf("resolve platform manifest: %w", err)
+			return nil, fmt.Errorf("resolve platform manifest: %w", err)
 		}
+		add(leafDigestHeader)
+		body = leafBody
 	}
 
 	var m manifest
 	if err := json.Unmarshal(body, &m); err != nil {
-		return "", fmt.Errorf("parse manifest: %w", err)
+		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
-	if m.Config.Digest == "" {
-		return "", fmt.Errorf("manifest missing config digest")
+	add(m.Config.Digest)
+
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("registry returned no identifiers for %s", reference)
 	}
-	return m.Config.Digest, nil
+	return ids, nil
 }
 
 func isManifestList(contentType string) bool {

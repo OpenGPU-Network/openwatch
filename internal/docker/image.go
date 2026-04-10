@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/registry"
@@ -39,25 +40,54 @@ func PullImage(ctx context.Context, cli *client.Client, ref string, authConfig *
 	return nil
 }
 
-// LocalImageDigest returns the image config digest (Docker's ".Id" field) for
-// the image pinned to ref. This is the SHA256 of the image config blob — the
-// canonical identifier Docker reports as .Id.
+// LocalImageIdentifiers returns every sha256 identifier Docker has locally
+// recorded for ref. We return a set rather than a single value because what
+// counts as "the" identifier has changed between Docker releases:
 //
-// We compare config digests (not RepoDigests / manifest-list digests) against
-// FetchRemoteConfigDigest in the registry package because it's the only
-// apples-to-apples comparison that works across both single-arch and
-// multi-arch images, and regardless of which Docker Engine version pulled
-// them. RepoDigest behaviour has drifted between Docker releases; config
-// digests are stable.
-func LocalImageDigest(ctx context.Context, cli *client.Client, ref string) (string, error) {
+//   - Traditional Docker Engine (pre-containerd store): .Id is the SHA256 of
+//     the image config blob.
+//   - Docker Desktop with the containerd image store (default since 27.x):
+//     .Id is the top-level manifest / OCI index digest — the same value the
+//     registry returns in the Docker-Content-Digest header at the tag.
+//   - After any pull or push, .RepoDigests carries repo@sha256:<digest>,
+//     where the digest is whatever the registry handed back — leaf manifest
+//     digest for an old-Docker multi-arch pull, index digest for a modern
+//     containerd pull.
+//
+// The watcher treats the image as up-to-date if any one of these locally known
+// identifiers matches any of the identifiers the registry advertises, which
+// removes the need to reason about which Docker version wrote the local state.
+func LocalImageIdentifiers(ctx context.Context, cli *client.Client, ref string) ([]string, error) {
 	img, err := cli.ImageInspect(ctx, ref)
 	if err != nil {
-		return "", fmt.Errorf("inspect image %s: %w", ref, err)
+		return nil, fmt.Errorf("inspect image %s: %w", ref, err)
 	}
-	if img.ID == "" {
-		return "", fmt.Errorf("image %s has no ID", ref)
+
+	seen := make(map[string]struct{}, 2+len(img.RepoDigests))
+	var ids []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
-	return img.ID, nil
+
+	add(img.ID)
+	for _, rd := range img.RepoDigests {
+		if i := strings.Index(rd, "@"); i >= 0 {
+			add(rd[i+1:])
+		}
+	}
+
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("image %s has no identifiers", ref)
+	}
+	return ids, nil
 }
 
 // RemoveImage removes an image by ID. Errors are returned to the caller but

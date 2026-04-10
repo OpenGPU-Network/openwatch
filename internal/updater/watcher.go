@@ -253,7 +253,7 @@ func (w *Watcher) processContainer(ctx context.Context, c docker.Container) {
 		auth = nil
 	}
 
-	remoteDigest, err := registry.FetchRemoteDigest(ref, auth)
+	remoteIDs, err := registry.FetchRemoteIdentifiers(ref, auth)
 	if err != nil {
 		clog.Error().Err(err).Msg("fetch remote digest failed")
 		w.metrics.RecordUpdate(c.Name, metrics.StatusFailed)
@@ -261,7 +261,7 @@ func (w *Watcher) processContainer(ctx context.Context, c docker.Container) {
 		return
 	}
 
-	localDigest, err := docker.LocalImageDigest(ctx, w.cli, c.Image)
+	localIDs, err := docker.LocalImageIdentifiers(ctx, w.cli, c.Image)
 	if err != nil {
 		clog.Error().Err(err).Msg("read local digest failed")
 		w.metrics.RecordUpdate(c.Name, metrics.StatusFailed)
@@ -269,11 +269,14 @@ func (w *Watcher) processContainer(ctx context.Context, c docker.Container) {
 		return
 	}
 
-	if digestsEqual(localDigest, remoteDigest) {
-		clog.Info().Str("digest", shortDigest(localDigest)).Msg("up to date")
+	if identifiersIntersect(localIDs, remoteIDs) {
+		clog.Info().Str("digest", shortDigest(localIDs[0])).Msg("up to date")
 		w.state.MarkChecked(c.Name, c.Image, StatusUpToDate)
 		return
 	}
+
+	localDigest := localIDs[0]
+	remoteDigest := remoteIDs[0]
 
 	if policy.NotifyOnly {
 		clog.Info().
@@ -363,9 +366,11 @@ func (w *Watcher) processContainer(ctx context.Context, c docker.Container) {
 	// both old and new SHAs. A failure here is not fatal — it only
 	// means the notification loses a diagnostic field; the update
 	// itself is already complete.
-	newImageID, idErr := docker.LocalImageDigest(ctx, w.cli, c.Image)
-	if idErr != nil {
+	var newImageID string
+	if newIDs, idErr := docker.LocalImageIdentifiers(ctx, w.cli, c.Image); idErr != nil {
 		clog.Warn().Err(idErr).Msg("could not resolve new image id for notification")
+	} else if len(newIDs) > 0 {
+		newImageID = newIDs[0]
 	}
 	_ = w.notify.Notify(
 		EventUpdateSuccess,
@@ -382,16 +387,32 @@ func (w *Watcher) processContainer(ctx context.Context, c docker.Container) {
 	}
 }
 
-// digestsEqual compares two digests after trimming any surrounding whitespace
-// and case-folding. Returns false when either side is empty — we never want
-// an empty remote digest to masquerade as "up to date".
-func digestsEqual(a, b string) bool {
-	a = strings.TrimSpace(a)
-	b = strings.TrimSpace(b)
-	if a == "" || b == "" {
+// identifiersIntersect reports whether the local and remote identifier sets
+// share any sha256 value after trimming and case-folding. Empty values on
+// either side never count as a match, so a registry that returned no digests
+// cannot masquerade as "up to date".
+func identifiersIntersect(local, remote []string) bool {
+	if len(local) == 0 || len(remote) == 0 {
 		return false
 	}
-	return strings.EqualFold(a, b)
+	seen := make(map[string]struct{}, len(local))
+	for _, id := range local {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+	}
+	for _, id := range remote {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func shortDigest(d string) string {

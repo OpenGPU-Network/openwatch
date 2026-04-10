@@ -113,8 +113,17 @@ func StopAndRemove(ctx context.Context, cli *client.Client, id string, stopTimeo
 }
 
 // Recreate stops the existing container, removes it, and creates a new one
-// with the exact same Config, HostConfig, and NetworkingConfig but pointed at
+// with the same Config, HostConfig, and NetworkingConfig but pointed at
 // newImageRef. The new container is started before returning.
+//
+// Image-inherited Config fields (Env, Cmd, Entrypoint, WorkingDir, User) are
+// reconciled against the OLD image's defaults so that image-bumped values
+// actually propagate on update. A straight verbatim copy of Config.Env would
+// carry stale ENV directives from the old image forward forever — that's the
+// "image ENV changes never take effect" regression Watchtower users hit when
+// they ship a new image version with an updated environment default. User
+// overrides (envs / cmds / etc. that differ from the old image's baseline)
+// are still preserved; only the inherited values are refreshed.
 //
 // The caller is expected to have already pulled newImageRef.
 func Recreate(ctx context.Context, cli *client.Client, c Container, newImageRef string, stopTimeoutSec int) (string, error) {
@@ -123,11 +132,29 @@ func Recreate(ctx context.Context, cli *client.Client, c Container, newImageRef 
 		return "", fmt.Errorf("container %s has incomplete inspect data", c.ID)
 	}
 
-	// Copy Config and point it at the new image. Everything else — env, cmd,
-	// entrypoint, workdir, user, labels, exposed ports, stop signal — is
-	// preserved verbatim.
+	// Copy Config and point it at the new image. Env / Cmd / Entrypoint /
+	// WorkingDir / User are then selectively reconciled below once we've
+	// inspected both image revisions. Labels and ExposedPorts stay verbatim
+	// so operator-applied labels (openwatch.enable, custom metadata) survive
+	// the update.
 	newConfig := *inspect.Config
 	newConfig.Image = newImageRef
+
+	// Reconcile image-inherited fields. Inspect both the old (pre-pull,
+	// still locally present because the Docker image store retains layers
+	// until RemoveImage runs) and the new image. If either inspect fails we
+	// fall back to the old verbatim-copy behaviour so a registry race or a
+	// pre-cleaned old image never blocks an update — the user override is
+	// still safe, only that one update's image-ENV bump is lost.
+	oldImg, oldErr := cli.ImageInspect(ctx, c.ImageID)
+	newImg, newErr := cli.ImageInspect(ctx, newImageRef)
+	if oldErr == nil && newErr == nil && oldImg.Config != nil && newImg.Config != nil {
+		newConfig.Env = reconcileEnv(inspect.Config.Env, oldImg.Config.Env, newImg.Config.Env)
+		newConfig.Cmd = reconcileSlice(inspect.Config.Cmd, oldImg.Config.Cmd, newImg.Config.Cmd)
+		newConfig.Entrypoint = reconcileSlice(inspect.Config.Entrypoint, oldImg.Config.Entrypoint, newImg.Config.Entrypoint)
+		newConfig.WorkingDir = reconcileScalar(inspect.Config.WorkingDir, oldImg.Config.WorkingDir, newImg.Config.WorkingDir)
+		newConfig.User = reconcileScalar(inspect.Config.User, oldImg.Config.User, newImg.Config.User)
+	}
 
 	// Deep-copy HostConfig through assignment. Pointer-to-HostConfig fields
 	// are shared, which is what we want: binds, port bindings, restart policy,
