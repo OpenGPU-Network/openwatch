@@ -26,7 +26,8 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -ldflags="-s -w -X main.Version=${VERSION}" \
     -o openwatch ./cmd/openwatch
 
-# Final stage — distroless nonroot.
-FROM gcr.io/distroless/static:nonroot
+# Final stage — alpine for credential helper support.
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/openwatch /openwatch
 ENTRYPOINT ["/openwatch"]

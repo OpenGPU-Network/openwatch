@@ -153,7 +153,7 @@ func (w *Watcher) runInterval(ctx context.Context) error {
 		interval = defaultInterval
 	}
 
-	w.log.Info().Dur("interval", interval).Msg("watcher using interval scheduler")
+	w.log.Info().Str("interval", fmt.Sprintf("%ds", int(interval.Seconds()))).Msg("watcher using interval scheduler")
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -244,7 +244,7 @@ func (w *Watcher) processContainer(ctx context.Context, c docker.Container) {
 		return
 	}
 
-	auth, err := registry.LoadAuth(ctx, w.cfg.DockerConfig, ref.Registry)
+	auth, err := registry.LoadAuth(ctx, w.cfg.DockerConfig, ref.Registry, w.cfg.RegistryUser, w.cfg.RegistryPassword)
 	if err != nil {
 		// Never log auth details (even on failure) — err may come from JSON
 		// parsing of config.json and contain nothing sensitive, but staying

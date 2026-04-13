@@ -37,13 +37,20 @@ type Config struct {
 	// DOCKER_CONFIG so private registry auth works the same way as the
 	// Docker CLI. Empty string means "use the default location".
 	DockerConfig string `mapstructure:"docker_config"`
+
+	// RegistryUser and RegistryPassword provide direct registry credentials
+	// that bypass config.json entirely. Useful when the host's Docker config
+	// uses a credential helper that is unavailable inside the container
+	// (e.g. docker-credential-desktop on macOS). These apply to all
+	// registries unless overridden by config.json for a specific host.
+	RegistryUser     string `mapstructure:"registry_user"`
+	RegistryPassword string `mapstructure:"registry_password"`
 }
 
 // Config file search paths, tried in order. The first file that exists
 // and parses successfully is used. Missing files are silently ignored;
 // a malformed file is a hard error.
 var configSearchPaths = []string{
-	".",
 	"/etc/openwatch",
 }
 
@@ -67,6 +74,8 @@ func Load() (*Config, error) {
 	v.SetDefault("log_format", DefaultLogFormat)
 	v.SetDefault("http_api", false)
 	v.SetDefault("docker_config", "")
+	v.SetDefault("registry_user", "")
+	v.SetDefault("registry_password", "")
 
 	v.SetEnvPrefix("OPENWATCH")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -85,6 +94,8 @@ func Load() (*Config, error) {
 	_ = v.BindEnv("log_level", "OPENWATCH_LOG_LEVEL")
 	_ = v.BindEnv("log_format", "OPENWATCH_LOG_FORMAT")
 	_ = v.BindEnv("http_api", "OPENWATCH_HTTP_API")
+	_ = v.BindEnv("registry_user", "OPENWATCH_REGISTRY_USER")
+	_ = v.BindEnv("registry_password", "OPENWATCH_REGISTRY_PASSWORD")
 
 	// DOCKER_CONFIG is a standard Docker env var (no OPENWATCH_ prefix). We
 	// route it through viper rather than calling os.Getenv from auth.go so

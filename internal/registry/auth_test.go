@@ -82,7 +82,7 @@ func TestLoadAuth_DockerConfigHit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := LoadAuth(context.Background(), dir, "ghcr.io")
+	got, err := LoadAuth(context.Background(), dir, "ghcr.io", "", "")
 	if err != nil {
 		t.Fatalf("LoadAuth returned error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestLoadAuth_AnonymousOnMiss(t *testing.T) {
 	data, _ := json.Marshal(cfg)
 	_ = os.WriteFile(filepath.Join(dir, "config.json"), data, 0600)
 
-	got, err := LoadAuth(context.Background(), dir, "ghcr.io")
+	got, err := LoadAuth(context.Background(), dir, "ghcr.io", "", "")
 	if err != nil {
 		t.Fatalf("LoadAuth returned error: %v", err)
 	}

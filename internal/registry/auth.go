@@ -2,12 +2,14 @@ package registry
 
 import (
 	"context"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -33,7 +35,9 @@ const ecrAuthTimeout = 15 * time.Second
 
 // dockerConfig mirrors the subset of ~/.docker/config.json we care about.
 type dockerConfig struct {
-	Auths map[string]dockerConfigAuth `json:"auths"`
+	Auths       map[string]dockerConfigAuth `json:"auths"`
+	CredsStore  string                      `json:"credsStore,omitempty"`
+	CredHelpers map[string]string           `json:"credHelpers,omitempty"`
 }
 
 type dockerConfigAuth struct {
@@ -59,20 +63,31 @@ type dockerConfigAuth struct {
 // All error messages are deliberately generic: we never log or return
 // usernames, passwords, bearer tokens, or anything else that could leak
 // through a centralized error-reporting pipeline.
-func LoadAuth(ctx context.Context, configPath, registryHost string) (*registry.AuthConfig, error) {
+func LoadAuth(ctx context.Context, configPath, registryHost, envUser, envPassword string) (*registry.AuthConfig, error) {
 	host := normalizeRegistryHost(registryHost)
 
+	// Priority 1: explicit env var credentials (OPENWATCH_REGISTRY_USER/PASSWORD).
+	// These bypass all config.json / credential-helper resolution and work
+	// even when the host's Docker config uses a credential store that is
+	// unavailable inside the container (e.g. docker-credential-desktop).
+	if envUser != "" && envPassword != "" {
+		return &registry.AuthConfig{
+			Username:      envUser,
+			Password:      envPassword,
+			ServerAddress: host,
+		}, nil
+	}
+
+	// Priority 2: ECR-specific flow.
 	if ecrHostPattern.MatchString(host) {
 		auth, err := loadECRAuth(ctx, host)
 		if err != nil {
-			// Never include the raw SDK error content — AWS errors can
-			// contain account IDs and request metadata. Return a stable
-			// sanitized string so callers may log it freely.
 			return nil, errors.New("ecr authorization failed: check AWS_REGION and AWS_* credentials")
 		}
 		return auth, nil
 	}
 
+	// Priority 3: Docker config.json (credential helpers, then plain auths).
 	return loadDockerConfigAuth(configPath, host)
 }
 
@@ -153,6 +168,34 @@ func loadDockerConfigAuth(configPath, registryHost string) (*registry.AuthConfig
 		return nil, fmt.Errorf("parse docker config: %w", err)
 	}
 
+	// Try credential helper for this specific host first (credHelpers),
+	// then the global credential store (credsStore).
+	if helper, ok := cfg.CredHelpers[registryHost]; ok {
+		if auth, err := execCredentialHelper(helper, registryHost); err == nil && auth != nil {
+			return auth, nil
+		}
+	}
+	if cfg.CredsStore != "" {
+		// For Docker Hub, the credential helper expects the key as stored
+		// in config.json (e.g. "https://index.docker.io/v1/"), not the
+		// API hostname. Try all known aliases.
+		hosts := []string{registryHost}
+		if registryHost == defaultRegistry {
+			hosts = append(hosts,
+				"https://index.docker.io/v1/",
+				"https://index.docker.io/v2/",
+				"index.docker.io",
+				"docker.io",
+			)
+		}
+		for _, h := range hosts {
+			if auth, err := execCredentialHelper(cfg.CredsStore, h); err == nil && auth != nil {
+				return auth, nil
+			}
+		}
+	}
+
+	// Fall back to plain auths field in config.json.
 	auth, ok := lookupAuth(cfg.Auths, registryHost)
 	if !ok {
 		return nil, nil
@@ -175,6 +218,36 @@ func loadDockerConfigAuth(configPath, registryHost string) (*registry.AuthConfig
 		Username:      username,
 		Password:      password,
 		ServerAddress: registryHost,
+	}, nil
+}
+
+// execCredentialHelper calls docker-credential-<helper> get with the
+// server URL on stdin and parses the JSON response. Returns nil,nil if
+// the helper binary is not found or returns empty credentials.
+func execCredentialHelper(helper, serverURL string) (*registry.AuthConfig, error) {
+	cmd := exec.Command("docker-credential-"+helper, "get")
+	cmd.Stdin = bytes.NewBufferString(serverURL)
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var cred struct {
+		Username string `json:"Username"`
+		Secret   string `json:"Secret"`
+	}
+	if err := json.Unmarshal(out, &cred); err != nil {
+		return nil, err
+	}
+	if cred.Username == "" && cred.Secret == "" {
+		return nil, nil
+	}
+
+	return &registry.AuthConfig{
+		Username:      cred.Username,
+		Password:      cred.Secret,
+		ServerAddress: serverURL,
 	}, nil
 }
 

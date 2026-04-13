@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"fmt"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -37,7 +38,7 @@ func main() {
 	logger := buildLogger(cfg.LogLevel, cfg.LogFormat)
 	logger.Info().
 		Str("version", Version).
-		Int("interval", cfg.Interval).
+		Str("interval", fmt.Sprintf("%ds", cfg.Interval)).
 		Str("schedule", cfg.Schedule).
 		Bool("cleanup", cfg.Cleanup).
 		Bool("label_enable", cfg.LabelEnable).

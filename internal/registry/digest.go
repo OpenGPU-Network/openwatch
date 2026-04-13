@@ -137,11 +137,28 @@ func isManifestList(contentType string) bool {
 	return strings.Contains(ct, "manifest.list") || strings.Contains(ct, "image.index")
 }
 
-// getManifest issues a GET against /v2/{repo}/manifests/{reference}. If the
-// registry replies with a 401 + Www-Authenticate: Bearer, we fetch a token and
-// retry once. Returns (Docker-Content-Digest, body, Content-Type).
+// getManifest issues a GET against /v2/{repo}/manifests/{reference}. For
+// Docker Hub the bearer token is acquired proactively so we never send an
+// unauthenticated request (which would count against the strict anonymous
+// rate limit and may receive a 429 before the 401 challenge is even
+// issued). For all other registries the standard reactive flow is used:
+// send an initial request, handle 401/429 with bearer token acquisition,
+// and retry once.
 func getManifest(ref *Reference, reference string, auth *registry.AuthConfig) (string, []byte, string, error) {
 	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", ref.Registry, ref.Repository, reference)
+
+	// Docker Hub: proactively acquire a bearer token. This avoids the
+	// unauthenticated first request entirely, which:
+	//  - saves a round-trip (no 401 dance)
+	//  - prevents 429 from blocking the auth challenge
+	//  - uses authenticated rate limits when config.json creds exist
+	if isDockerHub(ref.Registry) {
+		token, err := fetchDockerHubToken(ref.Repository, auth)
+		if err == nil && token != "" {
+			return doAuthenticatedManifestGet(url, token)
+		}
+		// Token fetch failed; fall through to standard reactive flow.
+	}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -158,28 +175,59 @@ func getManifest(ref *Reference, reference string, auth *registry.AuthConfig) (s
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized {
+	// Handle both 401 (standard challenge) and 429 (rate-limited before
+	// the auth challenge was issued). Some registries return 429 with a
+	// Www-Authenticate header; when present we can still acquire a token
+	// and retry with authenticated rate limits.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests {
 		challenge := resp.Header.Get("Www-Authenticate")
 		if strings.HasPrefix(strings.ToLower(challenge), "bearer") {
 			token, err := fetchBearerToken(challenge, auth)
 			if err != nil {
 				return "", nil, "", fmt.Errorf("fetch bearer token: %w", err)
 			}
-			req2, err := http.NewRequest(http.MethodGet, url, nil)
-			if err != nil {
-				return "", nil, "", err
-			}
-			req2.Header.Set("Accept", acceptHeader)
-			req2.Header.Set("Authorization", "Bearer "+token)
-			resp2, err := httpClient.Do(req2)
-			if err != nil {
-				return "", nil, "", fmt.Errorf("GET %s (with token): %w", url, err)
-			}
-			defer resp2.Body.Close()
-			return readManifest(resp2, url)
+			return doAuthenticatedManifestGet(url, token)
 		}
 	}
 
+	return readManifest(resp, url)
+}
+
+// isDockerHub reports whether host is one of the Docker Hub aliases.
+func isDockerHub(host string) bool {
+	switch strings.ToLower(host) {
+	case "registry-1.docker.io", "docker.io", "index.docker.io":
+		return true
+	}
+	return false
+}
+
+// fetchDockerHubToken constructs a bearer challenge for Docker Hub's
+// well-known token endpoint and fetches a token. When auth carries
+// credentials (from config.json / credential helpers) the token is
+// authenticated and subject to the higher per-account rate limit.
+func fetchDockerHubToken(repository string, auth *registry.AuthConfig) (string, error) {
+	challenge := fmt.Sprintf(
+		`Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:%s:pull"`,
+		repository,
+	)
+	return fetchBearerToken(challenge, auth)
+}
+
+// doAuthenticatedManifestGet performs a single manifest GET with a
+// pre-acquired bearer token.
+func doAuthenticatedManifestGet(url, token string) (string, []byte, string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("build manifest request: %w", err)
+	}
+	req.Header.Set("Accept", acceptHeader)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
 	return readManifest(resp, url)
 }
 
