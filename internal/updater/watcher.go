@@ -120,14 +120,15 @@ func (w *Watcher) TriggerByName(ctx context.Context, name string) bool {
 // "@hourly" in addition to standard 5-field expressions.
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
-// Run executes an initial pass and then either drives the poll loop from
-// a cron schedule (when cfg.Schedule is set) or a fixed interval ticker.
-// Both paths respect ctx cancellation for graceful shutdown.
+// Run drives the poll loop from a cron schedule (when cfg.Schedule is set)
+// or a fixed interval ticker. The first tick fires after the interval
+// elapses (or at the first cron match) — startup itself does not trigger
+// a check, so daemons that restart often do not hammer the registry on
+// every boot.
 //
-// An invalid cron expression is validated up front — before the first
-// tick — so main.go can fatal-exit with a clear message instead of
-// silently falling back to the interval ticker, and we don't perform
-// a pointless initial pass against misconfigured state.
+// An invalid cron expression is validated up front so main.go can
+// fatal-exit with a clear message instead of silently falling back to
+// the interval ticker.
 func (w *Watcher) Run(ctx context.Context) error {
 	schedule := strings.TrimSpace(w.cfg.Schedule)
 	if schedule != "" {
@@ -135,8 +136,6 @@ func (w *Watcher) Run(ctx context.Context) error {
 			return fmt.Errorf("invalid OPENWATCH_SCHEDULE %q: %w", schedule, err)
 		}
 	}
-
-	w.tick(ctx)
 
 	if schedule != "" {
 		return w.runCron(ctx, schedule)
