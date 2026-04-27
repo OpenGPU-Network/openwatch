@@ -88,6 +88,10 @@
 # Path to a Docker config.json used for private registry auth. Accepts either the directory containing config.json or the file itself, matching the DOCKER_CONFIG env var used by the Docker CLI. Leave empty to fall back to ~/.docker/config.json. Default: unset.
 #docker_config: ""
 
+# Direct registry credentials, applied to every host. Useful when the host's config.json relies on a credential helper that does not exist inside the container (e.g. docker-credential-desktop on macOS). Default: unset.
+#registry_user: ""
+#registry_password: ""
+
 # ---------------------------------------------------------------------------
 # Per-container overrides
 # ---------------------------------------------------------------------------

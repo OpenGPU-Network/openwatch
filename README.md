@@ -14,6 +14,10 @@ A lightweight Docker container auto-update daemon written in Go — a modern, AP
 
 OpenWatch is a ground-up rewrite that uses the official Docker Go SDK with `client.WithAPIVersionNegotiation()`, so the daemon negotiates the API version with whatever Docker Engine it happens to find. It is compatible with Docker Engine **19.03 through 29+** from a single binary. Everything else — digest-based update detection, container recreate with full config preservation, rollback on healthcheck failure, label-based opt-in, shoutrrr notifications — is built around that compatibility baseline.
 
+### How update checks avoid Docker Hub rate limits
+
+Every poll cycle starts with a `HEAD` request against the registry's manifest endpoint. Docker Hub explicitly does not count `HEAD` requests against its anonymous pull rate limit, so even an aggressive 30-second interval against a half-dozen public images stays well under the limit. The heavyweight `GET` (which would consume the limit) is only issued when the `HEAD` digest disagrees with the local image — in other words, when there is actually an update to act on. For Docker Hub specifically, OpenWatch acquires a bearer token proactively from `auth.docker.io/token` before either request, so the first call is never an unauthenticated round-trip.
+
 ---
 
 ## Quick start
@@ -78,6 +82,8 @@ A full annotated example lives at [`openwatch.yaml.example`](openwatch.yaml.exam
 | `OPENWATCH_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
 | `OPENWATCH_LOG_FORMAT` | `text` | Log format: `text` (human-readable) or `json` (structured). |
 | `OPENWATCH_HTTP_API` | `false` | Enable the HTTP API on port 8080. |
+| `OPENWATCH_REGISTRY_USER` | _(unset)_ | Direct registry username, applied to every host. Useful when the host's `config.json` uses a credential helper that is unavailable inside the container (e.g. `docker-credential-desktop` on macOS). |
+| `OPENWATCH_REGISTRY_PASSWORD` | _(unset)_ | Direct registry password, paired with `OPENWATCH_REGISTRY_USER`. |
 | `DOCKER_HOST` | _(from env)_ | Standard Docker env var. Use `unix:///var/run/docker.sock` or `tcp://host:2376`. |
 | `DOCKER_CONFIG` | _(unset)_ | Standard Docker env var. Path to the directory containing `config.json` for registry auth. |
 
