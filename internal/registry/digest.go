@@ -53,6 +53,23 @@ type manifest struct {
 	} `json:"config"`
 }
 
+// HeadManifestDigest performs a HEAD request against the registry to retrieve
+// the top-level Docker-Content-Digest without downloading the manifest body.
+// HEAD requests are NOT counted against Docker Hub's pull rate limit, making
+// this the preferred way to check whether an image is up-to-date during
+// regular polling. Only when the digest differs should the caller fall back
+// to FetchRemoteIdentifiers (a GET) to resolve the full set of identifiers.
+func HeadManifestDigest(ref *Reference, auth *registry.AuthConfig) (string, error) {
+	reference := ref.Tag
+	if reference == "" && ref.Digest != "" {
+		reference = ref.Digest
+	}
+	if reference == "" {
+		return "", fmt.Errorf("no tag or digest to look up")
+	}
+	return headManifest(ref, reference, auth)
+}
+
 // FetchRemoteIdentifiers contacts the registry HTTP API v2 and returns every
 // sha256 identifier that might legitimately describe the remote image from
 // some Docker client's perspective. The watcher's comparator treats the image
@@ -60,23 +77,9 @@ type manifest struct {
 // docker.LocalImageIdentifiers for why the identity of "the" image digest has
 // become version-dependent.
 //
-// The flow is:
-//
-//  1. GET /v2/{repo}/manifests/{tag} with an Accept header that covers both
-//     manifest and index media types.
-//  2. Record the top-level Docker-Content-Digest header. For single-manifest
-//     repos this is the manifest digest; for multi-arch repos it is the index
-//     digest. In both cases this is what modern containerd-based image stores
-//     report as the local .Id and inside .RepoDigests.
-//  3. If the response is a manifest list / OCI index, pick the leaf manifest
-//     for linux/<runtime.GOARCH> (falling back to linux/amd64), GET it, and
-//     also record its digest — that is what pre-containerd Docker Engines
-//     store in .RepoDigests after resolving a multi-arch pull.
-//  4. Record the leaf manifest's .config.digest as well. That is what
-//     traditional Docker Engines expose as the image config blob SHA via .Id.
-//
-// Deduped return order is: top manifest digest, leaf manifest digest, leaf
-// config digest. Any empty value is skipped.
+// This issues GET requests which count against Docker Hub's pull rate limit.
+// Prefer HeadManifestDigest for routine polling; only call this when the HEAD
+// digest indicates an update is available and the full identifier set is needed.
 func FetchRemoteIdentifiers(ref *Reference, auth *registry.AuthConfig) ([]string, error) {
 	reference := ref.Tag
 	if reference == "" && ref.Digest != "" {
@@ -135,6 +138,69 @@ func FetchRemoteIdentifiers(ref *Reference, auth *registry.AuthConfig) ([]string
 func isManifestList(contentType string) bool {
 	ct := strings.ToLower(contentType)
 	return strings.Contains(ct, "manifest.list") || strings.Contains(ct, "image.index")
+}
+
+// headManifest issues a HEAD against /v2/{repo}/manifests/{reference} and
+// returns the Docker-Content-Digest header. HEAD requests are not counted
+// against Docker Hub's pull rate limit.
+func headManifest(ref *Reference, reference string, auth *registry.AuthConfig) (string, error) {
+	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", ref.Registry, ref.Repository, reference)
+
+	if isDockerHub(ref.Registry) {
+		token, err := fetchDockerHubToken(ref.Repository, auth)
+		if err == nil && token != "" {
+			return doAuthenticatedManifestHead(url, token)
+		}
+	}
+
+	req, err := http.NewRequest(http.MethodHead, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build HEAD request: %w", err)
+	}
+	req.Header.Set("Accept", acceptHeader)
+	if auth != nil && auth.Username != "" {
+		req.SetBasicAuth(auth.Username, auth.Password)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HEAD %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests {
+		challenge := resp.Header.Get("Www-Authenticate")
+		if strings.HasPrefix(strings.ToLower(challenge), "bearer") {
+			token, err := fetchBearerToken(challenge, auth)
+			if err != nil {
+				return "", fmt.Errorf("fetch bearer token: %w", err)
+			}
+			return doAuthenticatedManifestHead(url, token)
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HEAD %s: status %d", url, resp.StatusCode)
+	}
+	return resp.Header.Get("Docker-Content-Digest"), nil
+}
+
+func doAuthenticatedManifestHead(url, token string) (string, error) {
+	req, err := http.NewRequest(http.MethodHead, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build HEAD request: %w", err)
+	}
+	req.Header.Set("Accept", acceptHeader)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HEAD %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HEAD %s: status %d", url, resp.StatusCode)
+	}
+	return resp.Header.Get("Docker-Content-Digest"), nil
 }
 
 // getManifest issues a GET against /v2/{repo}/manifests/{reference}. For

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 )
@@ -58,12 +59,7 @@ func PullImage(ctx context.Context, cli *client.Client, ref string, authConfig *
 // identifiers matches any of the identifiers the registry advertises, which
 // removes the need to reason about which Docker version wrote the local state.
 func LocalImageIdentifiers(ctx context.Context, cli *client.Client, ref string) ([]string, error) {
-	img, err := cli.ImageInspect(ctx, ref)
-	if err != nil {
-		return nil, fmt.Errorf("inspect image %s: %w", ref, err)
-	}
-
-	seen := make(map[string]struct{}, 2+len(img.RepoDigests))
+	seen := make(map[string]struct{}, 4)
 	var ids []string
 	add := func(id string) {
 		id = strings.TrimSpace(id)
@@ -77,10 +73,22 @@ func LocalImageIdentifiers(ctx context.Context, cli *client.Client, ref string) 
 		ids = append(ids, id)
 	}
 
-	add(img.ID)
-	for _, rd := range img.RepoDigests {
-		if i := strings.Index(rd, "@"); i >= 0 {
-			add(rd[i+1:])
+	// Always include the ref itself when it looks like a digest. This
+	// covers the case where the caller passes a container's ImageID
+	// (sha256:…) and the image record has been garbage-collected after
+	// the tag moved to a newer pull — the container is still running
+	// on the old layers but ImageInspect will 404.
+	if strings.HasPrefix(ref, "sha256:") {
+		add(ref)
+	}
+
+	img, err := cli.ImageInspect(ctx, ref)
+	if err == nil {
+		add(img.ID)
+		for _, rd := range img.RepoDigests {
+			if i := strings.Index(rd, "@"); i >= 0 {
+				add(rd[i+1:])
+			}
 		}
 	}
 
@@ -95,6 +103,9 @@ func LocalImageIdentifiers(ctx context.Context, cli *client.Client, ref string) 
 func RemoveImage(ctx context.Context, cli *client.Client, imageID string) error {
 	_, err := cli.ImageRemove(ctx, imageID, image.RemoveOptions{Force: false, PruneChildren: true})
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("remove image %s: %w", imageID, err)
 	}
 	return nil

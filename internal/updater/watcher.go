@@ -253,17 +253,31 @@ func (w *Watcher) processContainer(ctx context.Context, c docker.Container) {
 		auth = nil
 	}
 
-	remoteIDs, err := registry.FetchRemoteIdentifiers(ref, auth)
+	localIDs, err := docker.LocalImageIdentifiers(ctx, w.cli, c.ImageID)
 	if err != nil {
-		clog.Error().Err(err).Msg("fetch remote digest failed")
+		clog.Error().Err(err).Msg("read local digest failed")
 		w.metrics.RecordUpdate(c.Name, metrics.StatusFailed)
 		w.state.MarkChecked(c.Name, c.Image, StatusUnknown)
 		return
 	}
 
-	localIDs, err := docker.LocalImageIdentifiers(ctx, w.cli, c.Image)
+	// HEAD check — not counted against Docker Hub's pull rate limit.
+	// If the top-level digest matches a local identifier the image is
+	// up-to-date and we avoid the GET entirely.
+	headDigest, headErr := registry.HeadManifestDigest(ref, auth)
+	if headErr == nil && headDigest != "" {
+		if identifiersIntersect(localIDs, []string{headDigest}) {
+			clog.Info().Str("digest", shortDigest(headDigest)).Msg("up to date")
+			w.state.MarkChecked(c.Name, c.Image, StatusUpToDate)
+			return
+		}
+	}
+
+	// HEAD says the image changed (or HEAD failed). Full GET to resolve
+	// every identifier for a precise comparison before pulling.
+	remoteIDs, err := registry.FetchRemoteIdentifiers(ref, auth)
 	if err != nil {
-		clog.Error().Err(err).Msg("read local digest failed")
+		clog.Error().Err(err).Msg("fetch remote digest failed")
 		w.metrics.RecordUpdate(c.Name, metrics.StatusFailed)
 		w.state.MarkChecked(c.Name, c.Image, StatusUnknown)
 		return
